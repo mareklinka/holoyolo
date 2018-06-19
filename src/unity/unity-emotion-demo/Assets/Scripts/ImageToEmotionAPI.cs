@@ -36,7 +36,11 @@ public class ImageToEmotionAPI : MonoBehaviour {
     /// <returns> IEnumerator - needs to be called in a Coroutine </returns>
     IEnumerator GetEmotionFromImages()
     {
+#if UNITY_WINRT
         byte[] bytes = UnityEngine.Windows.File.ReadAllBytes(fileName);
+#else
+        byte[] bytes = System.IO.File.ReadAllBytes(fileName);
+#endif
 
         var headers = new Dictionary<string, string>() {
             { "Ocp-Apim-Subscription-Key", EMOTIONKEY },
