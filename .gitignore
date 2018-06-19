@@ -34,3 +34,13 @@ sysinfo.txt
 # Builds
 *.apk
 *.unitypackage
+
+src/unity/unity-emotion-demo/_ReSharper\.Caches/
+
+src/model/__pycache__/
+
+src/model/yolo3/__pycache__/
+
+*.h5
+
+*.weights
