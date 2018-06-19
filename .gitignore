@@ -44,3 +44,5 @@ src/model/yolo3/__pycache__/
 *.h5
 
 *.weights
+
+src/unity/unity-emotion-demo/App/
