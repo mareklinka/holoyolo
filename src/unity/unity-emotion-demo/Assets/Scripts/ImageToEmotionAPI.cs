@@ -1,21 +1,16 @@
 ﻿using System;
-using System.Diagnostics;
-using System.IO;
+using System.Collections;
 using System.Threading.Tasks;
 using UnityEngine;
 using HoloLensCameraStream;
+using UnityEngine.Networking;
 using Debug = UnityEngine.Debug;
 
 public class ImageToEmotionAPI : MonoBehaviour
 {
     private VideoCapture capture;
-
-    public string LatestFrame { get; private set; }
-
-    private bool captureStarted;
-
-    private int iterations = 0;
-    private TimeSpan duration = TimeSpan.Zero;
+    private int width = 640;
+    private int height = 480;
 
     void Start()
     {
@@ -27,13 +22,11 @@ public class ImageToEmotionAPI : MonoBehaviour
         capture = captureobject;
 
         capture.StartVideoModeAsync(
-            new CameraParameters(cameraResolutionWidth: 640, cameraResolutionHeight: 480, pixelFormat: CapturePixelFormat.NV12), OnVideoModeStartedCallback);
+            new CameraParameters(cameraResolutionWidth: 320, cameraResolutionHeight: 240, pixelFormat: CapturePixelFormat.BGRA32), OnVideoModeStartedCallback);
     }
 
     private void OnVideoModeStartedCallback(VideoCaptureResult result)
     {
-        captureStarted = true;
-
         Task.Run(() => ProcessCamera());
     }
 
@@ -51,28 +44,60 @@ public class ImageToEmotionAPI : MonoBehaviour
         {
             return;
         }
-
-        var sw = Stopwatch.StartNew();
+        
         var data = new byte[videocapturesample.dataLength];
         videocapturesample.CopyRawImageDataIntoBuffer(data);
 
         DoStuffWithData(data);
-
-        sw.Stop();
-        duration += sw.Elapsed;
-        ++iterations;
-
-        if (iterations % 100 == 0)
-        {
-            Debug.Log("Average time per frame " + duration.TotalMilliseconds / iterations + "ms");
-        }
     }
 
     private void DoStuffWithData(byte[] data)
     {
         Debug.Log("Received framebuffer of length " + data.Length);
 
-        LatestFrame = ByteArrayToHexViaLookup32(data);
+        var payload = ByteArrayToHexViaLookup32(data);
+
+        UnityEngine.WSA.Application.InvokeOnAppThread(() => StartCoroutine(PostImage(payload)), true);
+    }
+
+    private IEnumerator PostImage(string data)
+    {
+        var content = JsonUtility.ToJson(new DetectionRequest
+        {
+            data = data,
+            width = 320,
+            height = 240
+        });
+
+        var request = new UnityWebRequest("http://10.201.91.94:5000/image", "POST")
+        {
+            uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(content)),
+            downloadHandler = new DownloadHandlerBuffer()
+        };
+        request.SetRequestHeader("Content-Type", "application/json");
+
+        var response = request.SendWebRequest();
+
+        yield return response;
+
+        //var responseContent = JsonUtility.FromJson<DetectionResponse>(response.webRequest.downloadHandler.text);
+
+        Debug.Log("Bruh, we are done");
+    }
+
+    [Serializable]
+    public class DetectionResponse
+    {
+    }
+
+    [Serializable]
+    public class DetectionRequest
+    {
+        public string data;
+
+        public int width;
+
+        public int height;
     }
 
     private static readonly uint[] _lookup32 = CreateLookup32();
