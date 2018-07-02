@@ -184,15 +184,26 @@ namespace App2
                     var bitmap =
                         SoftwareBitmap.Convert(frame.VideoMediaFrame.SoftwareBitmap, BitmapPixelFormat.Rgba8, BitmapAlphaMode.Ignore);
 
-                    bitmap = Resize(bitmap, 416, 416);
-                    
                     using (bitmap)
                     {
-                        const int size = 416 * 416 * 4;
-                        var data = new byte[size];
+                        byte[] jpegData;
+                        using (var ms = new MemoryStream())
+                        {
+                            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, ms.AsRandomAccessStream());
 
-                        bitmap.CopyToBuffer(data.AsBuffer());
-                        var hex = ByteArrayToHexViaLookup32(data);
+                            encoder.SetSoftwareBitmap(bitmap);
+
+                            encoder.BitmapTransform.ScaledWidth = 416;
+                            encoder.BitmapTransform.ScaledHeight = 416;
+                            encoder.IsThumbnailGenerated = false;
+
+                            await encoder.FlushAsync();
+
+                            jpegData = ms.ToArray();
+                        }
+
+                        //var hex = ByteArrayToHexViaLookup32(jpegData);
+                        var hex = Convert.ToBase64String(jpegData);
                         var payload = JsonConvert.SerializeObject(new { data = hex, width = 416, height = 416 });
 
                         convSw.Stop();
@@ -416,22 +427,6 @@ namespace App2
             public float X2 { get; set; }
 
             public float Y2 { get; set; }
-        }
-
-        public static SoftwareBitmap Resize(SoftwareBitmap softwareBitmap, float newWidth, float newHeight)
-        {
-            using (var resourceCreator = CanvasDevice.GetSharedDevice())
-            using (var canvasBitmap = CanvasBitmap.CreateFromSoftwareBitmap(resourceCreator, softwareBitmap))
-            using (var canvasRenderTarget = new CanvasRenderTarget(resourceCreator, newWidth, newHeight, canvasBitmap.Dpi))
-            using (var drawingSession = canvasRenderTarget.CreateDrawingSession())
-            using (var scaleEffect = new ScaleEffect())
-            {
-                scaleEffect.Source = canvasBitmap;
-                scaleEffect.Scale = new System.Numerics.Vector2(newWidth / softwareBitmap.PixelWidth, newHeight / softwareBitmap.PixelHeight);
-                drawingSession.DrawImage(scaleEffect);
-                drawingSession.Flush();
-                return SoftwareBitmap.CreateCopyFromBuffer(canvasRenderTarget.GetPixelBytes().AsBuffer(), BitmapPixelFormat.Bgra8, (int)newWidth, (int)newHeight, BitmapAlphaMode.Premultiplied);
-            }
         }
     }
 }
