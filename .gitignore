@@ -50,3 +50,7 @@ src/unity/unity-emotion-demo/App/
 src/model/\.vscode/
 
 src/uwp/App2/bin/
+
+src/uwp/App2/AppPackages/
+
+src/uwp/App2/BundleArtifacts/

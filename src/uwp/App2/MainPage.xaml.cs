@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
@@ -18,6 +19,8 @@ using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Shapes;
 using Windows.Web.Http;
+using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.Effects;
 using Newtonsoft.Json;
 
 // The Blank Page item template is documented at https://go.microsoft.com/fwlink/?LinkId=402352&clcid=0x409
@@ -34,7 +37,8 @@ namespace App2
         private MediaFrameReader mediaFrameReader;
         private readonly HttpClient http = new HttpClient();
         private readonly JsonSerializer serializer = new JsonSerializer();
-        private VideoEncodingProperties previewProperties;
+        private readonly int targetWidth = 640;
+        private readonly int targetHeight = 480;
 
         public MainPage()
         {
@@ -65,7 +69,7 @@ namespace App2
 
                 var colorFrameSource = mediaCapture.FrameSources[colorSourceInfo.Id];
                 var preferredFormat = colorFrameSource.SupportedFormats.FirstOrDefault(format =>
-                    format.VideoFormat.Width == 1280
+                    format.VideoFormat.Width == targetWidth
                     && string.Compare(format.Subtype, MediaEncodingSubtypes.Nv12, true) == 0);
 
                 if (preferredFormat == null)
@@ -89,7 +93,6 @@ namespace App2
 
             try
             {
-                previewProperties = (VideoEncodingProperties)mediaCapture.VideoDeviceController.GetMediaStreamProperties(MediaStreamType.VideoPreview);
                 CameraPreview.Source = mediaCapture;
 
                 await mediaCapture.StartPreviewAsync();
@@ -159,6 +162,12 @@ namespace App2
 
         private async void ProcessPreview(MediaFrameReader reader)
         {
+            var count = 0;
+            var full = 0D;
+            var conversion = 0D;
+            var prediction = 0D;
+            var drawing = 0D;
+
             while (true)
             {
                 using (var frame = reader.TryAcquireLatestFrame())
@@ -168,42 +177,64 @@ namespace App2
                         continue;
                     }
 
+                    count++;
+
+                    var sw = Stopwatch.StartNew();
+                    var convSw = Stopwatch.StartNew();
                     var bitmap =
-                        SoftwareBitmap.Convert(frame.VideoMediaFrame.SoftwareBitmap, BitmapPixelFormat.Rgba8);
+                        SoftwareBitmap.Convert(frame.VideoMediaFrame.SoftwareBitmap, BitmapPixelFormat.Rgba8, BitmapAlphaMode.Ignore);
+
+                    bitmap = Resize(bitmap, 416, 416);
+                    
                     using (bitmap)
                     {
-                        const int size = 1280 * 720 * 4;
+                        const int size = 416 * 416 * 4;
                         var data = new byte[size];
 
                         bitmap.CopyToBuffer(data.AsBuffer());
                         var hex = ByteArrayToHexViaLookup32(data);
-                        var payload = JsonConvert.SerializeObject(new { data = hex, width = 1280, height = 720 });
+                        var payload = JsonConvert.SerializeObject(new { data = hex, width = 416, height = 416 });
 
-                        var response = await http.PostAsync(new Uri("http://localhost:5000/image"), new HttpStringContent(payload, UnicodeEncoding.Utf8, "application/json"));
+                        convSw.Stop();
+                        conversion += convSw.Elapsed.TotalMilliseconds;
+
+                        var predSw = Stopwatch.StartNew();
+                        var response = await http.PostAsync(new Uri("http://mar3ek.ddns.net:55665/image"), new HttpStringContent(payload, UnicodeEncoding.Utf8, "application/json"));
 
                         try
                         {
                             response.EnsureSuccessStatusCode();
+                            var responseStream = await response.Content.ReadAsInputStreamAsync();
 
-                            await ParseRespone(await response.Content.ReadAsInputStreamAsync());
+                            predSw.Stop();
+                            prediction += predSw.Elapsed.TotalMilliseconds;
+
+                            var drawSw = Stopwatch.StartNew();
+                            ParseRespone(responseStream);
+
+                            drawSw.Stop();
+                            drawing += drawSw.Elapsed.TotalMilliseconds;
                         }
                         catch (Exception)
                         {
                             // todo
                         }
                     }
+
+                    sw.Stop();
+                    full += sw.Elapsed.TotalMilliseconds;
                 }
             }
         }
 
-        private async Task ParseRespone(IInputStream responseStream)
+        private void ParseRespone(IInputStream responseStream)
         {
             using (var reader = new StreamReader(responseStream.AsStreamForRead()))
             using (var json = new JsonTextReader(reader))
             {
                 var response = serializer.Deserialize<Predictions>(json);
 
-                await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => DrawBoxes(response));
+                Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => DrawBoxes(response));
             }
         }
 
@@ -293,8 +324,10 @@ namespace App2
 
         private void DrawBoxes(Predictions predictions)
         {
-            var ratio = CameraPreview.ActualHeight / 720;
-            var previewWidth = 1280 * ratio;
+            var ratio = CameraPreview.ActualHeight / 480;
+            var previewWidth = 640 * ratio;
+            var h_ratio = previewWidth / 416;
+            var v_ratio = CameraPreview.ActualHeight / 416;
             
             var previewLeft = (CameraPreview.ActualWidth - previewWidth) / 2;
 
@@ -308,14 +341,14 @@ namespace App2
 
                 var rect = new Rectangle
                 {
-                    Width = (box.X2 - box.X1) * ratio,
-                    Height = (box.Y2 - box.Y1) * ratio,
+                    Width = (box.X2 - box.X1) * h_ratio,
+                    Height = (box.Y2 - box.Y1) * v_ratio,
                     Stroke = new SolidColorBrush(Colors.Red),
                     StrokeThickness = 4
                 };
 
-                Canvas.SetTop(rect, box.Y1 * ratio);
-                Canvas.SetLeft(rect, previewLeft + (box.X1 * ratio));
+                Canvas.SetTop(rect, box.Y1 * v_ratio);
+                Canvas.SetLeft(rect, previewLeft + (box.X1 * h_ratio));
 
                 var label = new TextBlock
                 {
@@ -383,6 +416,22 @@ namespace App2
             public float X2 { get; set; }
 
             public float Y2 { get; set; }
+        }
+
+        public static SoftwareBitmap Resize(SoftwareBitmap softwareBitmap, float newWidth, float newHeight)
+        {
+            using (var resourceCreator = CanvasDevice.GetSharedDevice())
+            using (var canvasBitmap = CanvasBitmap.CreateFromSoftwareBitmap(resourceCreator, softwareBitmap))
+            using (var canvasRenderTarget = new CanvasRenderTarget(resourceCreator, newWidth, newHeight, canvasBitmap.Dpi))
+            using (var drawingSession = canvasRenderTarget.CreateDrawingSession())
+            using (var scaleEffect = new ScaleEffect())
+            {
+                scaleEffect.Source = canvasBitmap;
+                scaleEffect.Scale = new System.Numerics.Vector2(newWidth / softwareBitmap.PixelWidth, newHeight / softwareBitmap.PixelHeight);
+                drawingSession.DrawImage(scaleEffect);
+                drawingSession.Flush();
+                return SoftwareBitmap.CreateCopyFromBuffer(canvasRenderTarget.GetPixelBytes().AsBuffer(), BitmapPixelFormat.Bgra8, (int)newWidth, (int)newHeight, BitmapAlphaMode.Premultiplied);
+            }
         }
     }
 }
